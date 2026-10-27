@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Завоевание мира</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #1d2630; color: #fff; margin: 0; padding: 10px; text-align: center; }
+  h1 { margin: 8px 0; }
+  #hud { display: flex; justify-content: center; gap: 16px; flex-wrap: wrap; font-size: 15px; margin: 8px; }
+  #actions button { margin: 4px; padding: 8px 12px; border: none; border-radius: 8px; cursor: pointer; background: #3b4a5c; color: #fff; font-size: 14px; }
+  #actions button:hover { background: #4d6077; }
+  #map { display: grid; grid-template-columns: repeat(auto-fill, minmax(105px, 1fr)); gap: 6px; max-width: 900px; margin: 10px auto; }
+  .c { border-radius: 8px; border: 2px solid #000; padding: 5px; font-size: 12px; cursor: pointer; min-height: 62px;
+       display: flex; flex-direction: column; justify-content: space-between; box-sizing: border-box; text-shadow: 0 1px 2px #000; }
+  .c.sel { outline: 3px solid gold; }
+  .c .f { font-size: 22px; }
+  .c .dot { font-size: 20px; line-height: 1; }
+  #log { height: 120px; overflow: auto; background: #111; max-width: 900px; margin: 10px auto; padding: 8px;
+         text-align: left; font-size: 13px; border-radius: 8px; }
+  #overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.75); align-items: center; justify-content: center; }
+  #overlay.show { display: flex; }
+  #overlay > div { background: #26323f; padding: 30px; border-radius: 12px; }
+  #overlay button { padding: 10px 18px; font-size: 16px; border: none; border-radius: 8px; cursor: pointer; }
+  p.hint { font-size: 13px; color: #aaa; }
+</style>
+</head>
+<body>
+
+<h1>🌍 Завоевание мира</h1>
+
+<div id="hud">
+  <div>Ваша страна: <span id="myName"></span></div>
+  <div>💰 <span id="money">0</span> (+<span id="income">0</span>/сек)</div>
+  <div>🏳 Ваши страны: <span id="terr"></span></div>
+</div>
+
+<div id="actions">
+  <button onclick="recruit()">➕ Нанять 10 солдат (30 💰)</button>
+  <button id="bAtk" onclick="upgrade('atk')"></button>
+  <button id="bDef" onclick="upgrade('def')"></button>
+  <button id="bEco" onclick="upgrade('eco')"></button>
+</div>
+
+<p class="hint">
+  Выберите свою страну (синяя), затем нажмите на другую страну того же региона, чтобы атаковать.
+  Победа — когда у вас больше половины всех стран. Красные страны принадлежат Коалиции (ИИ).
+</p>
+
+<div id="map"></div>
+<div id="log"></div>
+
+<div id="overlay">
+  <div>
+    <h2 id="endTitle"></h2>
+    <p id="endText"></p>
+    <button onclick="init()">Играть снова</button>
+  </div>
+</div>
+
+<script>
+// Коды стран по регионам (Россия и Украина не включены)
+const REG = {
+  Европа: 'AL AD AT BY BE BA BG HR CZ DK EE FI FR DE GR HU IS IE IT LV LI LT LU MT MD MC ME NL MK NO PL PT RO SM RS SK SI ES SE CH GB VA',
+  Азия: 'AF AM AZ BH BD BT BN KH CN CY GE IN ID IR IQ IL JP JO KZ KW KG LA LB MY MV MN MM NP KP KR OM PK PS PH QA SA SG LK SY TW TJ TH TL TR TM AE UZ VN YE',
+  Африка: 'DZ AO BJ BW BF BI CV CM CF TD KM CG CD CI DJ EG GQ ER SZ ET GA GM GH GN GW KE LS LR LY MG MW ML MR MU MA MZ NA NE NG RW ST SN SC SL SO ZA SS SD TZ TG TN UG ZM ZW',
+  Америка: 'AG AR BS BB BZ BO BR CA CL CO CR CU DM DO EC SV GD GT GY HT HN JM MX NI PA PY PE KN LC VC SR TT US UY VE',
+  Океания: 'AU FJ KI MH FM NR NZ PW PG WS SB TO TV VU'
+};
+
+const dn = new Intl.DisplayNames(['ru'], { type: 'region' });
+const flagOf = code => String.fromCodePoint(...[...code].map(ch => 127397 + ch.charCodeAt(0)));
+const rnd = (a, b) => a + Math.random() * (b - a);
+const rint = (a, b) => Math.floor(rnd(a, b + 1));
+const count = owner => C.filter(c => c.owner === owner).length;
+
+let C = [];   // страны: {code, name, flag, region, owner, army}
+let S = {};   // состояние игры
+
+function init() {
+  C = [];
+  for (const [region, codes] of Object.entries(REG)) {
+    codes.split(' ').forEach(code => C.push({
+      code, name: dn.of(code), flag: flagOf(code), region,
+      owner: null, army: rint(0, 4)
+    }));
+  }
+  const order = [...C.keys()].sort(() => Math.random() - 0.5);
+  C[order[0]].owner = 'player'; C[order[0]].army = 10;
+  order.slice(1, 6).forEach(i => { C[i].owner = 'ai'; C[i].army = 6; });
+
+  S = { money: 100, atk: 0, def: 0, eco: 0, sel: null, over: false, t: 0 };
+  document.getElementById('log').innerHTML = '';
+  document.getElementById('overlay').classList.remove('show');
+  document.getElementById('myName').textContent = `${C[order[0]].flag} ${C[order[0]].name}`;
+  log('Игра началась! Захватите большую часть мира.');
+  render();
+  updateHud();
+}
+
+function log(text) {
+  const l = document.getElementById('log');
+  const d = document.createElement('div');
+  d.textContent = text;
+  l.prepend(d);
+  while (l.children.length > 40) l.lastChild.remove();
+}
+
+function render() {
+  const map = document.getElementById('map');
+  map.innerHTML = '';
+  C.forEach((c, i) => {
+    const d = document.createElement('div');
+    const bg = c.owner === 'player' ? '#2a7de1' : c.owner === 'ai' ? '#b03a2e' : '#5a5f66';
+    d.className = 'c' + (S.sel === i ? ' sel' : '');
+    d.style.background = bg;
+    d.innerHTML = `
+      <div>${c.name}</div>
+      <div class="f">${c.flag}</div>
+      <div>⚔ ${c.army} <span class="dot">•</span> ${c.owner === 'player' ? 'Вы' : c.owner === 'ai' ? 'Коалиция' : 'Нейтр.'}</div>`;
+    d.onclick = () => onClick(i);
+    map.appendChild(d);
+  });
+}
+
+function updateHud() {
+  const mine = count('player'), total = C.length;
+  document.getElementById('money').textContent = Math.floor(S.money);
+  document.getElementById('income').textContent = (mine * (1 + S.eco * 0.5)).toFixed(1);
+  document.getElementById('terr').textContent = `${mine} / ${total} (нужно ${Math.ceil(total / 2)})`;
+  document.getElementById('bAtk').textContent = `⚔ Атака +25% (${100 * (S.atk + 1)} 💰)`;
+  document.getElementById('bDef').textContent = `🛡 Оборона +25% (${100 * (S.def + 1)} 💰)`;
+  document.getElementById('bEco').textContent = `🏭 Экономика +50% (${100 * (S.eco + 1)} 💰)`;
+}
+
+function onClick(i) {
+  if (S.over) return;
+  const c = C[i];
+  if (c.owner === 'player') {
+    S.sel = S.sel === i ? null : i;
+  } else if (S.sel !== null && C[S.sel].region === c.region) {
+    if (C[S.sel].army < 2) { log('Нужно минимум 2 солдата для атаки'); return; }
+    combat(S.sel, i, 'player');
+    S.sel = null;
+  } else {
+    log('Выберите свою страну, а цель должна быть в том же регионе');
+  }
+  checkWin();
+  render();
+  updateHud();
+}
+
+function recruit() {
+  if (S.over) return;
+  if (S.sel === null) { log('Сначала выберите свою страну'); return; }
+  if (S.money < 30) { log('Нужно 30 💰'); return; }
+  S.money -= 30;
+  C[S.sel].army += 10;
+  log(`Нанято 10 солдат в стране ${C[S.sel].name}`);
+  render();
+  updateHud();
+}
+
+function upgrade(type) {
+  if (S.over) return;
+  const cost = 100 * (S[type] + 1);
+  if (S.money < cost) { log(`Нужно ${cost} 💰 для улучшения`); return; }
+  S.money -= cost;
+  S[type]++;
+  log('Улучшение куплено!');
+  updateHud();
+}
+
+// who — чья атака ('player' или 'ai')
+function combat(fromI, toI, who) {
+  const from = C[fromI], to = C[toI];
+  const sent = from.army - 1;
+  from.army = 1;
+
+  const atkPower = sent * (who === 'player' ? 1 + S.atk * 0.25 : 1) * rnd(0.8, 1.2);
+  const defBase = to.army + (to.owner ? 0 : 3);          // у нейтральных стран есть базовая защита
+  const defMult = to.owner === 'player' ? 1 + S.def * 0.25 : 1;
+  const defPower = defBase * defMult * rnd(0.8, 1.2);
+
+  if (atkPower > defPower) {
+    to.owner = who;
+    to.army = Math.max(1, Math.round(sent * 0.4));
+    log(`🚩 ${who === 'player' ? 'Вы захватили' : 'Коалиция захватила'} ${to.name} ${to.flag}`);
+  } else {
+    to.army = Math.max(0, Math.round(to.army - sent * 0.5));
+    log(`🛡 ${who === 'player' ? 'Атака на' : 'Коалиция атаковала'} ${to.name} отбита`);
+  }
+}
+
+function aiTurn() {
+  const aiCountries = C.map((c, i) => i).filter(i => C[i].owner === 'ai');
+  if (!aiCountries.length) return;
+
+  const reinforce = aiCountries[rint(0, aiCountries.length - 1)];
+  C[reinforce].army += 2;
+
+  const options = [];
+  aiCountries.forEach(i => {
+    if (C[i].army < 3) return;
+    C.forEach((c, j) => {
+      if (c.owner !== 'ai' && c.region === C[i].region) options.push([i, j]);
+    });
+  });
+  if (options.length && Math.random() < 0.6) {
+    const [i, j] = options[rint(0, options.length - 1)];
+    combat(i, j, 'ai');
+  }
+}
+
+function checkWin() {
+  if (S.over) return;
+  const p = count('player'), a = count('ai'), total = C.length;
+  if (p >= Math.ceil(total / 2)) endGame(true, 'Вы захватили большую часть мира!');
+  else if (p === 0) endGame(false, 'Ваши страны захвачены...');
+  else if (a >= Math.ceil(total * 0.6)) endGame(false, 'Коалиция подчинила большую часть мира...');
+}
+
+function endGame(won, text) {
+  S.over = true;
+  document.getElementById('endTitle').textContent = won ? '🏆 Победа!' : '💀 Поражение';
+  document.getElementById('endText').textContent = text;
+  document.getElementById('overlay').classList.add('show');
+}
+
+// Игровой цикл
+setInterval(() => {
+  if (S.over) return;
+  S.t++;
+  S.money += count('player') * (1 + S.eco * 0.5);
+  C.forEach(c => { if (c.owner === 'player') c.army += 0; });
+  if (S.t % 3 === 0) aiTurn();
+  checkWin();
+  render();
+  updateHud();
+}, 1000);
+
+init();
+</script>
+</body>
+</html>
